@@ -1,0 +1,6 @@
+# config for LSUN dataset
+
+name: lsun
+batch_size: 16
+image_size: 256
+num_workers: 4

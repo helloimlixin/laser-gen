@@ -1,0 +1,8 @@
+defaults:
+  - dataset: cifar10
+  - model: vqgan
+  - trainer: default
+  - _self_
+
+seed: 42
+results_dir: ${hydra:runtime.output_dir}

@@ -1,0 +1,5 @@
+max_epochs: 100
+gpus: 1
+accelerator: null
+precision: 32
+log_every_n_steps: 100
