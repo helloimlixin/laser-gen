@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import lightning as pl
+from lightning.pytorch.loggers import WandbLogger
 import torchvision
 from torchmetrics.functional.text import perplexity
 
@@ -175,15 +176,15 @@ class VQVAE(pl.LightningModule):
                 self.test_fid.update(x_fid, real=True)
 
         # Log all metrics (now they're all scalars)
-        self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True)
-        self.log(f'{prefix}/recon_loss', recon_loss, on_step=True, on_epoch=True)
-        self.log(f'{prefix}/vq_loss', vq_loss, on_step=True, on_epoch=True)
-        self.log(f'{prefix}/perceptual_loss', perceptual_loss, on_step=True, on_epoch=True)
-        self.log(f'{prefix}/perplexity', perplexity, on_step=True, on_epoch=True)
+        self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log(f'{prefix}/recon_loss', recon_loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log(f'{prefix}/vq_loss', vq_loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log(f'{prefix}/perceptual_loss', perceptual_loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log(f'{prefix}/perplexity', perplexity, on_step=True, on_epoch=True, sync_dist=True)
 
         # Add PSNR calculation
         psnr = self.psnr(x, recon)
-        self.log(f'{prefix}/psnr', psnr, on_step=True, on_epoch=True)
+        self.log(f'{prefix}/psnr', psnr, on_step=True, on_epoch=True, sync_dist=True)
 
         return {
             'loss': total_loss,
@@ -283,14 +284,15 @@ class VQVAE(pl.LightningModule):
         x_recon_grid = x_recon_grid.cpu().numpy().transpose(1, 2, 0)
 
         # Log to wandb using the experiment attribute
-        self.logger.experiment.log({
-            f"{split}/images": [
-                wandb.Image(x_grid, caption="Original"),
-                wandb.Image(x_recon_grid, caption="Reconstructed")
-            ],
-            f"{split}/reconstruction_error": F.mse_loss(x_recon, x).item(),
-            "global_step": self.global_step
-        })
+        if isinstance(self.logger, WandbLogger):
+            self.logger.experiment.log({
+                f"{split}/images": [
+                    wandb.Image(x_grid, caption="Original"),
+                    wandb.Image(x_recon_grid, caption="Reconstructed")
+                ],
+                f"{split}/reconstruction_error": F.mse_loss(x_recon, x).item(),
+                "global_step": self.global_step
+            })
 
 
 # test the VQVAE model
