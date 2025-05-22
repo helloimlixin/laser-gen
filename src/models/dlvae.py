@@ -274,6 +274,14 @@ class DLVAE(pl.LightningModule):
         x = x[:32]
         x_recon = x_recon[:32]
 
+        # Normalize images to [0, 1]
+        x = x + 0.5
+        x_recon = x_recon + 0.5
+
+        # Clamp images to [0, 1]
+        x = torch.clamp(x, 0, 1)
+        x_recon = torch.clamp(x_recon, 0, 1)
+
         # Create image grids
         x_grid = torchvision.utils.make_grid(x, nrow=8, normalize=True, value_range=(-1, 1))
         x_recon_grid = torchvision.utils.make_grid(x_recon, nrow=8, normalize=True, value_range=(-1, 1))

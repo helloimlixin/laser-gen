@@ -62,8 +62,8 @@ class Encoder(nn.Module):
     def forward(self, x):
         x = F.relu(self._conv_1(x))
         x = F.relu(self._conv_2(x))
-        x = F.relu(self._conv_3(x))
-        return F.relu(self._residual_blocks(x))
+        x = self._conv_3(x)
+        return self._residual_blocks(x)
 
 
 # test the encoder

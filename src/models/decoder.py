@@ -25,13 +25,6 @@ class Decoder(nn.Module):
     def __init__(self, in_channels, num_hiddens, num_residual_blocks, num_residual_hiddens):
         super().__init__()
         
-        # Initial processing
-        self.conv1 = nn.Conv2d(in_channels,
-                               num_hiddens,
-                               kernel_size=3,
-                               stride=1,
-                               padding=1)
-        
         # Residual blocks
         self.residual_blocks = nn.Sequential(*[ResidualBlock(in_channels=num_hiddens,
                                                              num_hiddens=num_hiddens,
@@ -56,9 +49,6 @@ class Decoder(nn.Module):
         )
 
     def forward(self, x):
-        # Initial processing
-        x = self.conv1(x)
-        
         # Residual blocks
         x = self.residual_blocks(x)
         

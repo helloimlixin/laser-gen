@@ -198,53 +198,123 @@ class DictionaryLearning(nn.Module):
         """Normalize all dictionary atoms to have unit L2 norm."""
         with torch.no_grad():
             self.dictionary.data = self.dictionary.data / torch.linalg.norm(self.dictionary.data, dim=0)
+    
+    def batch_omp(self, signals, dictionary, debug=False):
+        """sparse coding stage
 
-    def batch_omp(self, X, D):
+        Implemented using the Batch Orthogonal Matching Pursuit (OMP) algorithm.
+
+        Reference:
+        - Rubinstein, R., Zibulevsky, M. and Elad, M., "Efficient Implementation of the K-SVD Algorithm using Batch Orthogonal Matching Pursuit," CS Technion, 2008.
+
+        :param signals: input signals to be sparsely coded
         """
-        Batched Orthogonal Matching Pursuit.
+        _, num_signals = signals.size()
+        dictionary_t = dictionary.t()  # save the transpose of the dictionary for faster computation
+        gram_matrix = dictionary_t.mm(dictionary)  # the Gram matrix, dimension: num_atoms x num_atoms
+        corr_init = dictionary_t.mm(signals).t()  # initial correlation vector, transposed to make num_signals the first dimension
+        gamma = torch.zeros_like(corr_init)  # placeholder for the sparse coefficients
+        delta = torch.zeros(num_signals, device=signals.device)
+        eps = torch.norm(signals, dim=0)  # the residual, initialized as the L2 norm of the signal
 
-        Args:
-            X (torch.Tensor): Input signals of shape (B, M).
-            D (torch.Tensor): Dictionary of shape (M, N), where each column is an atom of dimension M.
+        corr = corr_init
+        L = torch.ones(num_signals, 1, 1, device=signals.device)  # contains the progressive Cholesky of the Gram matrix in the selected indices
+        I = torch.zeros(num_signals, 0, dtype=torch.long, device=signals.device)  # placeholder for the index set
+        omega = torch.zeros_like(corr_init, dtype=torch.bool)  # used to zero out elements in corr before argmax
+        signal_idx = torch.arange(num_signals, device=signals.device)
 
-        Returns:
-            coefficients: (N, B) Tensor with the corresponding coefficients.
-        """
-        M, B = X.shape
-        _, N = D.shape
-        device = X.device
+        k = 0
+        while k < self.sparsity_level:
+            k += 1
+            k_hats = torch.argmax(torch.abs(corr * (~omega)), dim=1)  # select the index of the maximum correlation
+            # update omega to make sure we do not select the same index twice
+            omega[torch.arange(k_hats.shape[0], device=signals.device), k_hats] = 1
+            expanded_signal_idx = signal_idx.unsqueeze(0).expand(k, num_signals).t()  # expand is more efficient than repeat
 
-        # Initialize the full coefficients matrix (N, B) with zeros.
-        coefficients = torch.zeros(N, B, device=device, dtype=X.dtype)
+            if k > 1:  # Cholesky update
+                G_ = gram_matrix[I[signal_idx, :], k_hats[expanded_signal_idx[...,:-1]]].view(num_signals, k - 1, 1)  # compute for all signals in a vectorized manner
+                w = torch.linalg.solve_triangular(L, G_, upper=False).view(-1, 1, k - 1)
+                w_br = torch.sqrt(1 - (w ** 2).sum(dim=2, keepdim=True))  # L bottom-right corner element: sqrt(1 - w.t().mm(w))
 
-        # Initialize residual as the input signals.
-        residual = X.clone()  # shape (M, B)
+                # concatenate into the new Cholesky: L <- [[L, 0], [w, w_br]]
+                k_zeros = torch.zeros(num_signals, k - 1, 1, device=signals.device)
+                L = torch.cat((
+                    torch.cat((L, k_zeros), dim=2),
+                    torch.cat((w, w_br), dim=2),
+                ), dim=1)
 
-        for k in range(self.sparsity_level):
-            # Compute the correlations (projections): D^T (shape N x M) x residual (M x B) = (N x B)
-            correlations = torch.mm(D.t(), residual)  # shape (N, B)
+            # update non-zero indices
+            I = torch.cat([I, k_hats.unsqueeze(1)], dim=1)
 
-            # For each signal (each column), select the atom with the highest absolute correlation / projection
-            idx = torch.argmax(torch.abs(correlations), dim=0)  # shape (B,)
+            # solve L
+            corr_ = corr_init[expanded_signal_idx, I[signal_idx, :]].view(num_signals, k, 1)
+            gamma_ = torch.cholesky_solve(corr_, L)
 
-            # Gather the selected atoms: for each signal i, d_selected[:, i] = D[:, idx[i]]
-            # D is (M, N) and idx is (B,), so D[:, idx] is (M, B).
-            d_selected = D[:, idx]  # shape (M, B)
+            # de-stack gamma into the non-zero elements
+            gamma[signal_idx.unsqueeze(1), I[signal_idx]] = gamma_[signal_idx].squeeze(-1)
 
-            # Compute coefficients for each signal:
-            # alpha[i] = (residual[:, i] @ d_selected[:, i]) / (|| d_selected[:, i] ||^2)
-            numerator = (residual * d_selected).sum(dim=0)  # shape (B,)
-            denominator = (d_selected ** 2).sum(dim=0)  # shape (B,)
-            alpha = numerator / (denominator + self.epsilon)  # shape (B,)
+            # beta = G_I * gamma_I
+            beta = gamma[signal_idx.unsqueeze(1), I[signal_idx]].unsqueeze(1).bmm(
+                gram_matrix[I[signal_idx], :]).squeeze(1)
 
-            # Update the full coefficient matrix.
-            sample_indices = torch.arange(B, device=device)  # shape (B,)
-            coefficients.index_put_((idx, sample_indices), alpha, accumulate=True)
+            corr = corr_init - beta
 
-            # Update the residual: residual = X - D @ coefficients
-            residual = residual - d_selected * alpha.unsqueeze(0)  # shape (M, B)
+            # update residual
+            new_delta = (gamma * beta).sum(dim=1)
+            eps += delta - new_delta
+            delta = new_delta
 
-        return coefficients
+            if debug and k % 1 == 0:
+                print('Step {}, residual: {:.4f}, below tolerance: {:.4f}'.format(k, eps.max(), (eps < 1e-7).float().mean().item()))
+
+        return gamma.t()  # transpose the sparse coefficients to make num_signals the first dimension
+
+    # def batch_omp(self, X, D):
+    #     """
+    #     Batched Orthogonal Matching Pursuit.
+
+    #     Args:
+    #         X (torch.Tensor): Input signals of shape (B, M).
+    #         D (torch.Tensor): Dictionary of shape (M, N), where each column is an atom of dimension M.
+
+    #     Returns:
+    #         coefficients: (N, B) Tensor with the corresponding coefficients.
+    #     """
+    #     M, B = X.shape
+    #     _, N = D.shape
+    #     device = X.device
+
+    #     # Initialize the full coefficients matrix (N, B) with zeros.
+    #     coefficients = torch.zeros(N, B, device=device, dtype=X.dtype)
+
+    #     # Initialize residual as the input signals.
+    #     residual = X.clone()  # shape (M, B)
+
+    #     for k in range(self.sparsity_level):
+    #         # Compute the correlations (projections): D^T (shape N x M) x residual (M x B) = (N x B)
+    #         correlations = torch.mm(D.t(), residual)  # shape (N, B)
+
+    #         # For each signal (each column), select the atom with the highest absolute correlation / projection
+    #         idx = torch.argmax(torch.abs(correlations), dim=0)  # shape (B,)
+
+    #         # Gather the selected atoms: for each signal i, d_selected[:, i] = D[:, idx[i]]
+    #         # D is (M, N) and idx is (B,), so D[:, idx] is (M, B).
+    #         d_selected = D[:, idx]  # shape (M, B)
+
+    #         # Compute coefficients for each signal:
+    #         # alpha[i] = (residual[:, i] @ d_selected[:, i]) / (|| d_selected[:, i] ||^2)
+    #         numerator = (residual * d_selected).sum(dim=0)  # shape (B,)
+    #         denominator = (d_selected ** 2).sum(dim=0)  # shape (B,)
+    #         alpha = numerator / (denominator + self.epsilon)  # shape (B,)
+
+    #         # Update the full coefficient matrix.
+    #         sample_indices = torch.arange(B, device=device)  # shape (B,)
+    #         coefficients.index_put_((idx, sample_indices), alpha, accumulate=True)
+
+    #         # Update the residual: residual = X - D @ coefficients
+    #         residual = residual - d_selected * alpha.unsqueeze(0)  # shape (M, B)
+
+    #     return coefficients
     
     def forward(self, z_e):
         """
