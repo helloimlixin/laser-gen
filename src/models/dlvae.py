@@ -186,22 +186,30 @@ class DLVAE(pl.LightningModule):
             self.test_fid.update(x_recon_fid, real=False)
             self.test_fid.update(x_fid, real=True)
 
-        # Log metrics
-        self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, sync_dist=True)
-        self.log(f'{prefix}/recon_loss', recon_loss, on_step=True, on_epoch=True, sync_dist=True)
-        self.log(f'{prefix}/dl_loss', dl_loss, on_step=True, on_epoch=True, sync_dist=True)
-        self.log(f'{prefix}/perceptual_loss', perceptual_loss, on_step=True, on_epoch=True, sync_dist=True)
-
-        # Add PSNR calculation
-        psnr = self.psnr(x, recon)
-        self.log(f'{prefix}/psnr', psnr, on_step=True, on_epoch=True, sync_dist=True)
+        # Log metrics - ensure sync_dist=True for all metrics
+        on_step = prefix != 'test'  # Don't log test metrics on step to reduce noise
+        
+        # For test metrics, we'll accumulate in test_step and log in on_test_epoch_end
+        if prefix == 'test':
+            # Don't log here, just return the metrics to be accumulated
+            pass
+        else:
+            # For train and val, log as before
+            self.log(f'{prefix}/loss', total_loss, on_step=on_step, on_epoch=True, sync_dist=True)
+            self.log(f'{prefix}/recon_loss', recon_loss, on_step=on_step, on_epoch=True, sync_dist=True)
+            self.log(f'{prefix}/dl_loss', dl_loss, on_step=on_step, on_epoch=True, sync_dist=True)
+            self.log(f'{prefix}/perceptual_loss', perceptual_loss, on_step=on_step, on_epoch=True, sync_dist=True)
+            
+            # Add PSNR calculation
+            psnr = self.psnr(x, recon)
+            self.log(f'{prefix}/psnr', psnr, on_step=on_step, on_epoch=True, sync_dist=True)
 
         return {
             'loss': total_loss,
             'recon_loss': recon_loss,
             'dl_loss': dl_loss,
             'perceptual_loss': perceptual_loss,
-            'psnr': psnr,
+            'psnr': self.psnr(x, recon),
             'x': x,
             'x_recon': recon
         }
@@ -225,15 +233,23 @@ class DLVAE(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         metrics = self.compute_metrics(batch, prefix='test')
         
+        # Store metrics for accumulation
+        for key in ['loss', 'recon_loss', 'dl_loss', 'perceptual_loss', 'psnr']:
+            self.log(f'test/{key}', metrics[key], on_step=False, on_epoch=True, sync_dist=True)
+        
         if batch_idx % self.log_images_every_n_steps == 0:
             self._log_images(metrics['x'], metrics['x_recon'], split='test')
-
-        if self.test_fid is not None:
-            fid_score = self.test_fid.compute()
-            self.log("test/fid", fid_score, on_epoch=True)
-            self.test_fid.reset()
-            
+    
         return metrics
+    
+    def on_test_epoch_end(self):
+        """Compute FID at the end of the test epoch to ensure all batches are processed."""
+        if self.test_fid is not None:
+            # Compute FID only once at the end of testing
+            fid_score = self.test_fid.compute()
+            # Make sure to use sync_dist=True for proper multi-GPU aggregation
+            self.log("test/fid", fid_score, sync_dist=True)
+            self.test_fid.reset()
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
@@ -276,5 +292,3 @@ class DLVAE(pl.LightningModule):
                 f"{split}/reconstruction_error": F.mse_loss(x_recon, x).item(),
                 "global_step": self.global_step
             })
-        
-        

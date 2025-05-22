@@ -137,7 +137,7 @@ class VGG16(nn.Module):
 
 def norm_tensor(x):
     """
-    Normalize images by their length to make them unit vector?
+    Normalize images by their length to make them unit vector
     :param x: batch of images
     :return: normalized batch of images
     """
