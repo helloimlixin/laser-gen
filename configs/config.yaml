@@ -1,8 +1,14 @@
+# configs/config.yaml
 defaults:
-  - dataset: cifar10
-  - model: vqgan
-  - trainer: default
   - _self_
+  - model: dlvae
+  - data: cifar10
+  - train: default
+  - wandb: default
+  - checkpoint: default
 
 seed: 42
-results_dir: ${hydra:runtime.output_dir}
+output_dir: outputs
+hydra:
+  run:
+    dir: ${output_dir}/${now:%Y-%m-%d_%H-%M-%S}

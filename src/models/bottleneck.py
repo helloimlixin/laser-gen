@@ -292,3 +292,167 @@ class DictionaryLearning(nn.Module):
 
         return z_dl.permute(0, 3, 1, 2).contiguous(), loss, coefficients  # Return the reconstructed latent representation, loss, and sparse coefficients
 
+
+def test_vector_quantizer():
+    print("Testing VectorQuantizer...")
+    
+    # Parameters
+    batch_size = 2
+    embedding_dim = 64
+    height, width = 8, 8
+    num_embeddings = 512
+    
+    # Create random test input
+    z = torch.randn(batch_size, embedding_dim, height, width)
+    
+    # Initialize VQ model
+    vq = VectorQuantizer(
+        num_embeddings=num_embeddings,
+        embedding_dim=embedding_dim,
+        commitment_cost=0.25,
+        decay=0.99
+    )
+    
+    # Test forward pass
+    z_q, loss, indices = vq(z)
+    
+    # Print shapes and stats
+    print(f"Input shape: {z.shape}")
+    print(f"Quantized output shape: {z_q.shape}")
+    print(f"Loss: {loss.item():.4f}")
+    print(f"Indices shape: {indices.shape}")
+    
+    # Test codebook lookup
+    random_indices = torch.randint(0, num_embeddings, (10,))
+    codebook_vectors = vq.get_codebook_entry(random_indices)
+    print(f"Retrieved codebook vectors shape: {codebook_vectors.shape}")
+    
+    # Visualize codebook usage after forward pass
+    usage_count = torch.bincount(indices, minlength=num_embeddings)
+    
+    plt.figure(figsize=(10, 4))
+    plt.bar(range(num_embeddings), usage_count.cpu().numpy())
+    plt.title("VQ Codebook Usage")
+    plt.xlabel("Codebook Index")
+    plt.ylabel("Usage Count")
+    plt.savefig("vq_codebook_usage.png")
+    print("Saved codebook usage visualization to vq_codebook_usage.png")
+    
+    return vq, z, z_q, loss, indices
+
+def test_dictionary_learning_bottleneck():
+    print("\nTesting OnlineDictionaryLearningBottleneck...")
+    
+    # Parameters
+    batch_size = 2
+    embedding_dim = 64
+    height, width = 8, 8
+    num_embeddings = 512
+    sparsity = 5
+    
+    # Create random test input
+    z = torch.randn(batch_size, embedding_dim, height, width)
+    
+    # Initialize ODL model
+    odl = DictionaryLearning(
+        num_embeddings=num_embeddings,
+        embedding_dim=embedding_dim,
+        sparsity_level=sparsity,
+        commitment_cost=0.25,
+        decay=0.99,
+        use_ema=True
+    )
+    
+    # Test forward pass
+    z_q, loss, coefficients = odl(z)
+    
+    # Print shapes and stats
+    print(f"Input shape: {z.shape}")
+    print(f"Quantized output shape: {z_q.shape}")
+    print(f"Loss: {loss.item():.4f}")
+    print(f"Coefficients shape: {coefficients.shape}")
+    
+    # Check sparsity_level of coefficients
+    nonzero_ratio = (coefficients.abs() > 1e-6).float().mean().item()
+    print(f"Nonzero coefficient ratio: {nonzero_ratio:.4f}")
+    print(f"Expected sparsity ratio: {sparsity/num_embeddings:.4f}")
+    
+    # Visualize dictionary atom usage
+    atom_usage = (coefficients.abs() > 1e-6).float().sum(dim=1).cpu().numpy()
+    
+    plt.figure(figsize=(10, 4))
+    plt.bar(range(num_embeddings), atom_usage)
+    plt.title("Dictionary Atom Usage")
+    plt.xlabel("Atom Index")
+    plt.ylabel("Usage Count")
+    plt.savefig("dictionary_atom_usage.png")
+    print("Saved dictionary atom usage visualization to dictionary_atom_usage.png")
+    
+    # Visualize a few dictionary atoms
+    num_atoms_to_show = 10
+    atoms_to_show = np.random.choice(num_embeddings, num_atoms_to_show, replace=False)
+    
+    plt.figure(figsize=(12, 6))
+    for i, atom_idx in enumerate(atoms_to_show):
+        plt.subplot(2, 5, i+1)
+        plt.plot(odl.dictionary[:, atom_idx].detach().cpu().numpy())
+        plt.title(f"Atom {atom_idx}")
+        plt.axis('off')
+    plt.tight_layout()
+    plt.savefig("dictionary_atoms.png")
+    print("Saved dictionary atoms visualization to dictionary_atoms.png")
+    
+    return odl, z, z_q, loss, coefficients
+
+def compare_reconstructions(vq_data, odl_data):
+    print("\nComparing reconstructions...")
+    
+    # Unpack data
+    _, z_vq, z_q_vq, loss_vq, _ = vq_data
+    _, z_odl, z_q_odl, loss_odl, _ = odl_data
+    
+    # Calculate reconstruction errors
+    vq_mse = torch.mean((z_vq - z_q_vq) ** 2).item()
+    odl_mse = torch.mean((z_odl - z_q_odl) ** 2).item()
+    
+    print(f"VQ-VAE MSE: {vq_mse:.6f}")
+    print(f"ODL MSE: {odl_mse:.6f}")
+    
+    # Visualize sample reconstructions
+    batch_idx = 0
+    channel_idx = 0
+    
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 3, 1)
+    plt.imshow(z_vq[batch_idx, channel_idx].detach().cpu().numpy())
+    plt.title("Original")
+    plt.colorbar()
+    
+    plt.subplot(1, 3, 2)
+    plt.imshow(z_q_vq[batch_idx, channel_idx].detach().cpu().numpy())
+    plt.title(f"VQ-VAE (MSE: {vq_mse:.6f})")
+    plt.colorbar()
+    
+    plt.subplot(1, 3, 3)
+    plt.imshow(z_q_odl[batch_idx, channel_idx].detach().cpu().numpy())
+    plt.title(f"ODL (MSE: {odl_mse:.6f})")
+    plt.colorbar()
+    
+    plt.tight_layout()
+    plt.savefig("reconstruction_comparison.png")
+    print("Saved reconstruction comparison to reconstruction_comparison.png")
+
+if __name__ == "__main__":
+    # Set random seeds for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    
+    # Run tests
+    vq_data = test_vector_quantizer()
+    odl_data = test_dictionary_learning_bottleneck()
+    
+    # Compare reconstructions
+    compare_reconstructions(vq_data, odl_data)
+    
+    print("\nAll tests completed!")

@@ -1,0 +1,10 @@
+# requirements.txt
+torchvision
+lightning
+hydra-core
+wandb
+omegaconf
+tqdm
+torchmetrics
+numpy
+matplotlib
